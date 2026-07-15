@@ -14,7 +14,7 @@ This has the sole exception of 0xFF
 START_BIT = b'\x02' # Start of message!
 END_BIT   = b'\x03' # Over!
 ACK       = b'\x06' # Copy!
-NAK       = b'\x15' # FUCK YOU! (not acknowledged)
+NAK       = b'\x15' # Do not copy!
 
 
 
@@ -147,7 +147,7 @@ def decode_temp(temp_byte: int) -> float:
 
 def turn_ac_on(mode: DaikinMode, temp: int, fan: DaikinFanSpeed) -> bytes:
     """
-    What the genuine fuck do you think this does???
+    What do you think this does???
     Okay, that aside, you should know something important about this function.
     As you can see, when we assemble this packet, we must specify:
         - The fan value (fanspeed)
