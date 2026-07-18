@@ -431,3 +431,4 @@ FodyWeavers.xsd
 *.msm
 *.msp
 S21.md
+typings*
