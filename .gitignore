@@ -398,6 +398,9 @@ MSBuild_Logs/
 # BeatPulse healthcheck temp database
 healthchecksdb
 
+# Ignore esp32-faikout project folder
+esp32-faikout/
+
 # Backup folder for Package Reference Convert tool in Visual Studio 2017
 MigrationBackup/
 
@@ -427,3 +430,4 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+S21.md
