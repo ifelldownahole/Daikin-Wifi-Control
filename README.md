@@ -1,4 +1,9 @@
-# Daikin AC UART Control Library
+# Daikin Wifi Control
+
+
+## Hey! 
+
+This literally only has the UART library. this won't work right now, and is heavily under work. Expect a working version in the next week.
 
 A MicroPython/CircuitPython library for controlling Daikin air conditioning units via the S21 serial protocol.
 
