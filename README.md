@@ -133,7 +133,7 @@ If things aren't working:
 
 ## License
 
-Check the LICENSE file in this repo.
+nah dont feel like it 
 
 ---
 
