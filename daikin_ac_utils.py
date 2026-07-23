@@ -1,10 +1,6 @@
 # Daikin AC UART helper library for the S21 protocol.
 
-
 # This library is designed for MicroPython and CircuitPython environments.
-
-
-from enum import Enum
 
 try:
     import machine
@@ -16,6 +12,12 @@ try:
 except ImportError:
     import utime as time
 
+# MicroPython doesn't have TimeoutError – define it ourselves if missing.
+try:
+    TimeoutError
+except NameError:
+    class TimeoutError(Exception):
+        pass
 
 START_BIT = b'\x02'  # STX (Start of text)
 END_BIT = b'\x03'    # ETX (End of text)
@@ -24,42 +26,43 @@ NAK = b'\x15'        # Not Acknowledged
 
 
 """
-Enums are used here because the S21 protocol uses fixed byte values for commands and settings.
-The enums provide a clear mapping between human-readable names and the underlying byte values.
-This makes the code more maintainable and easier to understand, while still allowing direct access to the byte values when needed.
+Constants for the S21 protocol's fixed command and setting byte values.
+Plain bytes used directly – no enum machinery, no metaclasses, no broken
+MicroPython inheritance.  Use them like DaikinMode.COOL, DaikinQuery.ROOM_TEMP,
+etc.  They are just bytes and can be concatenated or passed as-is.
 """
 
-class DaikinQuery(bytes, Enum):
+class DaikinQuery:
     POWER_MODE_TEMP_FAN = b'F1'
-    FEATURES = b'F2'
-    SWING_HUMIDITY = b'F5'
-    POWERFUL_QUIET_LED = b'F6'
-    DEMAND_ECO = b'F7'
-    PROTOCOL_VERSION = b'F8'
-    TEMPS_ALT = b'F9'
-    FEATURE_BITS = b'FK'
-    POWER_CONSUMPTION = b'FM'
-    MODEL = b'FC'
-    ROOM_TEMP = b'RH'
-    OUTSIDE_TEMP = b'Ra'
-    INLET_TEMP = b'RI'
-    FAN_RPM = b'RL'
-    COMPRESSOR_RPM = b'Rd'
-    HUMIDITY = b'Re'
-    LOUVER_ANGLE = b'RN'
+    FEATURES            = b'F2'
+    SWING_HUMIDITY      = b'F5'
+    POWERFUL_QUIET_LED  = b'F6'
+    DEMAND_ECO          = b'F7'
+    PROTOCOL_VERSION    = b'F8'
+    TEMPS_ALT           = b'F9'
+    FEATURE_BITS        = b'FK'
+    POWER_CONSUMPTION   = b'FM'
+    MODEL               = b'FC'
+    ROOM_TEMP           = b'RH'
+    OUTSIDE_TEMP        = b'Ra'
+    INLET_TEMP          = b'RI'
+    FAN_RPM             = b'RL'
+    COMPRESSOR_RPM      = b'Rd'
+    HUMIDITY            = b'Re'
+    LOUVER_ANGLE        = b'RN'
 
 
-class DaikinMode(bytes, Enum):
+class DaikinMode:
     AUTO = b'0'
-    DRY = b'2'
+    DRY  = b'2'
     COOL = b'3'
     HEAT = b'4'
-    FAN = b'6'
+    FAN  = b'6'
 
 
-class DaikinFanSpeed(bytes, Enum):
-    AUTO = b'A'
-    QUIET = b'B'
+class DaikinFanSpeed:
+    AUTO    = b'A'
+    QUIET   = b'B'
     SPEED_1 = b'3'
     SPEED_2 = b'4'
     SPEED_3 = b'5'
@@ -67,16 +70,17 @@ class DaikinFanSpeed(bytes, Enum):
     SPEED_5 = b'7'
 
 
-class DaikinSetter(bytes, Enum):
+class DaikinSetter:
     POWER_MODE_TEMP_FAN = b'D1'
-    SWING_HUMIDITY = b'D5'
-    POWERFUL_QUIET_LED = b'D6'
-    DEMAND_ECO = b'D7'
+    SWING_HUMIDITY      = b'D5'
+    POWERFUL_QUIET_LED  = b'D6'
+    DEMAND_ECO          = b'D7'
 
 
-class DaikinPower(bytes, Enum):
-    ON = b'1'
+class DaikinPower:
+    ON  = b'1'
     OFF = b'0'
+
 
 """
 Bit masks are defined here as tiny namespace classes because these S21 setter payloads
@@ -234,16 +238,16 @@ def decode_temp(temp_byte):
 
 def decode_f1_response(payload):
     """
-    Decode an F1/G1 status payload into a dict with enums where possible.
+    Decode an F1/G1 status payload into a dict.
 
     The F1 payload contains 4 bytes:
       - Byte 0: Power state (b'1' = ON, b'0' = OFF)
-      - Byte 1: Operating mode (mapped to DaikinMode enum)
+      - Byte 1: Operating mode (raw byte, see DaikinMode constants)
       - Byte 2: Target setpoint temperature (@-based encoding, decoded via decode_temp)
-      - Byte 3: Fan speed (mapped to DaikinFanSpeed enum)
+      - Byte 3: Fan speed (raw byte, see DaikinFanSpeed constants)
 
-    Returns a dict with keys 'power' (bool), 'mode' (enum or raw bytes),
-    'target_temp' (float), and 'fan' (enum or raw bytes).
+    Returns a dict with keys 'power' (bool), 'mode' (bytes),
+    'target_temp' (float), and 'fan' (bytes).
 
     Why a dict and not a string? 
     It's easier to programatically parse and use the values in code, and it allows for future expansion if more fields are added to the payload.
@@ -253,18 +257,9 @@ def decode_f1_response(payload):
         raise ValueError("Invalid F1 payload: expected 4 bytes, got %d" % len(payload))
 
     power = payload[0:1] == b'1'
-    mode_byte = payload[1:2]
+    mode = payload[1:2]
     target_temp = decode_temp(payload[2])
-    fan_byte = payload[3:4]
-
-    try:
-        mode = DaikinMode(mode_byte)
-    except ValueError:
-        mode = mode_byte  # fallback to raw bytes
-    try:
-        fan = DaikinFanSpeed(fan_byte)
-    except ValueError:
-        fan = fan_byte
+    fan = payload[3:4]
 
     return {
         'power': power,
@@ -743,14 +738,13 @@ class DaikinController:
         """
         Send a generic command or setter payload frame.
         """
-        if isinstance(command, (DaikinQuery, DaikinSetter)):
-            command_bytes = command.value
-        elif isinstance(command, (bytes, bytearray)):
+        # Accept raw bytes or strings – all our constants are bytes, so this is simple.
+        if isinstance(command, (bytes, bytearray)):
             command_bytes = bytes(command)
         elif isinstance(command, str):
             command_bytes = command.encode("ascii")
         else:
-            raise TypeError("Command must be DaikinQuery, DaikinSetter, bytes, or str")
+            raise TypeError("Command must be bytes or str")
 
         packet = assemble_packet(command_bytes, payload)
         return self._transaction(packet, expect_reply=read_response, timeout=timeout)
@@ -765,11 +759,11 @@ class DaikinController:
         return payload
 
     def turn_on(self, temp, fan=DaikinFanSpeed.AUTO, mode=DaikinMode.COOL, timeout=1000):
-        payload = DaikinPower.ON.value + mode.value + encode_temp(temp) + fan.value
+        payload = DaikinPower.ON + mode + encode_temp(temp) + fan
         return self.send_command(DaikinSetter.POWER_MODE_TEMP_FAN, payload=payload, read_response=False, timeout=timeout)
 
     def turn_off(self, timeout=1000):
-        payload = DaikinPower.OFF.value + DaikinMode.AUTO.value + encode_temp(18) + DaikinFanSpeed.AUTO.value
+        payload = DaikinPower.OFF + DaikinMode.AUTO + encode_temp(18) + DaikinFanSpeed.AUTO
         return self.send_command(DaikinSetter.POWER_MODE_TEMP_FAN, payload=payload, read_response=False, timeout=timeout)
 
     def get_status(self, timeout=1000):
