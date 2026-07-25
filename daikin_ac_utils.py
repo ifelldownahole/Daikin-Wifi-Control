@@ -27,22 +27,17 @@ NAK = b'\x15'        # Not Acknowledged
 
 """
 Constants for the S21 protocol's fixed command and setting byte values.
-Plain bytes used directly – no enum machinery, no metaclasses, no broken
-MicroPython inheritance.  Use them like DaikinMode.COOL, DaikinQuery.ROOM_TEMP,
+Plain bytes used directly, because I only JUST realsied that micropython
+DOESN'T HAVE ENUMS!!! Use them like DaikinMode.COOL, DaikinQuery.ROOM_TEMP,
 etc.  They are just bytes and can be concatenated or passed as-is.
 """
 
 class DaikinQuery:
     POWER_MODE_TEMP_FAN = b'F1'
     FEATURES            = b'F2'
+    POWERFUL_ALT        = b'F3'   # used by this model instead of F6
     SWING_HUMIDITY      = b'F5'
-    POWERFUL_QUIET_LED  = b'F6'
-    DEMAND_ECO          = b'F7'
     PROTOCOL_VERSION    = b'F8'
-    TEMPS_ALT           = b'F9'
-    FEATURE_BITS        = b'FK'
-    POWER_CONSUMPTION   = b'FM'
-    MODEL               = b'FC'
     ROOM_TEMP           = b'RH'
     OUTSIDE_TEMP        = b'Ra'
     INLET_TEMP          = b'RI'
@@ -73,8 +68,6 @@ class DaikinFanSpeed:
 class DaikinSetter:
     POWER_MODE_TEMP_FAN = b'D1'
     SWING_HUMIDITY      = b'D5'
-    POWERFUL_QUIET_LED  = b'D6'
-    DEMAND_ECO          = b'D7'
 
 
 class DaikinPower:
@@ -96,60 +89,19 @@ class SwingBits:
     HORIZONTAL = 0x02   # bit 1
 
 def make_swing_payload(vertical=False, horizontal=False):
-    """Return a single-byte payload for D5 (swing/humidity)."""
-    val = 0
-    if vertical:
-        val |= SwingBits.VERTICAL
-    if horizontal:
-        val |= SwingBits.HORIZONTAL
-    return bytes([val])
-
-class PowerfulBits:
-    POWERFUL = 0x02    # bit 1
-    QUIET    = 0x80    # bit 7
-    COMFORT  = 0x40    # bit 6
-    STREAMER = 0x80    # byte 1, bit 7 (separate byte)
-    SENSOR   = 0x08    # bit 3
-    LED_MASK = 0x0C    # bits 2+3 (LED: 00=off, 01=dim, 10=bright)
-
-def make_powerful_quiet_led_payload(powerful=False, quiet=False, comfort=False,
-                                    streamer=False, sensor=False, led=0):
     """
-    Build the 4-byte payload for D6 (powerful/quiet/LED).
-    led: 0=off, 1=dim, 2=bright.
+    Build the 4-byte payload for D5 as used by the Faikin firmware.
+    This is the only format accepted by this AC unit.
+    Byte 0: '0' + horizontal*2 + vertical*1 + both*4
+    Byte 1: '?' if any swing else '0'
+    Byte 2: '0'
+    Byte 3: '0'
     """
-    pkt = bytearray(4)
-    # byte 0 – bits: powerful(1), comfort(6), quiet(7)
-    if powerful:
-        pkt[0] |= PowerfulBits.POWERFUL
-    if comfort:
-        pkt[0] |= PowerfulBits.COMFORT
-    if quiet:
-        pkt[0] |= PowerfulBits.QUIET
-    # byte 1 – streamer bit 7
-    if streamer:
-        pkt[1] = 0x80
-    # byte 3 – sensor bit 3, LED bits 2+3
-    if sensor:
-        pkt[3] |= PowerfulBits.SENSOR
-    pkt[3] |= (led << 2) & PowerfulBits.LED_MASK
-    return bytes(pkt)
+    both = vertical and horizontal
+    b0 = ord('0') + (2 if horizontal else 0) + (1 if vertical else 0) + (4 if both else 0)
+    b1 = ord('?') if (vertical or horizontal) else ord('0')
+    return bytes([b0, b1, ord('0'), ord('0')])
 
-class DemandEcoBits:
-    DEMAND_BASE = 0x30  # '0' character
-    ECO         = 0x02  # bit 1
-
-def make_demand_eco_payload(demand=0, eco=False):
-    """
-    demand: 0-100 (mapped to character '0' + value)
-    eco: True/False
-    """
-    if not 0 <= demand <= 100:
-        raise ValueError("Demand must be 0-100")
-    b0 = bytes([DemandEcoBits.DEMAND_BASE + demand])
-    b1 = bytes([0x02]) if eco else b'\x00'
-    # assume payload: byte0 demand, byte1 eco flag, bytes 2,3 zero
-    return b0 + b1 + b'\x00\x00'
 
 """
 The following functions help out with decoding the various payloads returned by the AC unit, because the S21 protocol
@@ -157,6 +109,10 @@ is really weird and uses reversed ASCII, @-based temperature encoding, and other
 interpret the raw bytes into meaningful values like temperature, fan speed, and swing state.
 Trust me, some of the stuff that you see this protocol doing is just bizarre, and these helpers are here to make it less painful.
 """
+
+def _reverse_str(s):
+    """Reverse a string without extended slice (MicroPython compatible)."""
+    return ''.join(reversed(s))
 
 def decode_temp_numeric(payload):
     """
@@ -173,7 +129,7 @@ def decode_temp_numeric(payload):
     if len(payload) < 4:
         raise ValueError("Numeric temp payload too short")
     s = payload.decode('ascii')
-    rev = s[::-1]
+    rev = _reverse_str(s)
     try:
         return float(rev) / 10.0
     except ValueError:
@@ -194,23 +150,8 @@ def decode_numeric_int(payload):
     s = payload.decode('ascii').strip()
     if not s:
         return 0
-    rev = s[::-1].lstrip('0') or '0'
+    rev = _reverse_str(s).lstrip('0') or '0'
     return int(rev)
-
-def decode_hex_reversed(payload):
-    """
-    Decode a reversed hexadecimal payload into an int.
-
-    Some S21 values (like total energy consumption in Wh) are stored as
-    4 ASCII hex characters in reverse order. For example, 14930 Wh (0x3A52)
-    becomes the bytes b'25A3':
-      - The raw bytes are reversed: "3A52"
-      - The string is parsed as hex: 0x3A52 = 14930
-
-    Returns the decoded integer value.
-    """
-    s = payload.decode('ascii')
-    return int(s[::-1], 16)
 
 def decode_temp(temp_byte):
     """
@@ -299,110 +240,22 @@ def decode_swing_humidity(payload):
         'horizontal_swing': bool(b & SwingBits.HORIZONTAL),
     }
 
-def decode_powerful_quiet_led(payload):
+def decode_powerful_alt(payload):
     """
-    Decode G6 powerful/quiet/LED payload into a dict of settings.
+    Decode the F3 alternative powerful status payload.
 
-    The G6 payload uses 4 bytes with bit-packed flags:
-      - Byte 0: powerful (bit 1), comfort (bit 6), quiet (bit 7)
-      - Byte 1: streamer (bit 7)
-      - Byte 3: sensor (bit 3), LED brightness (bits 2-3, where 00=off, 01=dim, 10=bright)
-
-    Each flag is extracted by masking the appropriate bit and converting to a boolean.
-    The LED value is extracted by masking bits 2-3, shifting right by 2, and mapping
-    the resulting value (0, 1, 2) to a human-readable string.
-
-    Returns a dict with keys 'powerful', 'quiet', 'comfort', 'streamer', 'sensor' (all bool),
-    and 'led' (string: 'off', 'dim', 'bright', or 'unknown').
-
-    Why are 3 pretty much unrelated functions all bundled into one payload? 
-    Because the S21 protocol is genuinely not made for any sane human being.
+    This model returns powerful state in byte 3, bit 1 (0x02).
+    Other bits may exist but are not decoded here.
+    Returns a dict with key 'powerful' (bool).
     """
     if len(payload) < 4:
-        raise ValueError("Payload too short for G6")
-    byte0 = payload[0]
-    byte1 = payload[1]
-    byte3 = payload[3]
-
-    led_bits = (byte3 & PowerfulBits.LED_MASK) >> 2
-    led_state = {0: 'off', 1: 'dim', 2: 'bright'}.get(led_bits, 'unknown')
-
+        raise ValueError("Payload too short for F3")
     return {
-        'powerful': bool(byte0 & PowerfulBits.POWERFUL),
-        'quiet': bool(byte0 & PowerfulBits.QUIET),
-        'comfort': bool(byte0 & PowerfulBits.COMFORT),
-        'streamer': bool(byte1 & PowerfulBits.STREAMER),
-        'sensor': bool(byte3 & PowerfulBits.SENSOR),
-        'led': led_state,
+        'powerful': bool(payload[3] & 0x02),
     }
-
-def decode_demand_eco(payload):
-    """
-    Decode G7 demand/eco payload into a dict.
-
-    For reference, this is supposed to be the ECONO mode that you have on your remote.
-    You're usually not allowed to edit the demand percentage, but some units allow it.
-
-    The G7 payload contains:
-      - Byte 0: Demand percentage encoded as an ASCII character offset from '0' (0x30).
-                Subtract 0x30 from the byte to get the demand value (0-100).
-      - Byte 1: Eco mode flag in bit 1 (0x02).
-
-    Returns a dict with keys 'demand' (int, 0-100) and 'eco' (bool).
-    """
-    if len(payload) < 2:
-        raise ValueError("Payload too short for G7")
-    demand_byte = payload[0] - DemandEcoBits.DEMAND_BASE
-    if not 0 <= demand_byte <= 100:
-        demand_byte = 0  # fallback
-    eco = bool(payload[1] & DemandEcoBits.ECO)
-    return {
-        'demand': demand_byte,
-        'eco': eco,
-    }
-
-def decode_temps_alt(payload):
-    """
-    Decode G9 alternate temperatures payload into a dict.
-
-    The G9 payload contains two @-based temperature bytes:
-      - Byte 0: Home/indoor temperature (@-based encoding)
-      - Byte 1: Outside temperature (@-based encoding)
-
-    Each byte is decoded using decode_temp(), which subtracts 64 from the byte,
-    divides by 2, and adds 18.0 to convert from the @-based notation to Celsius.
-
-    Returns a dict with keys 'home_temp' (float °C) and 'outside_temp' (float °C).
-    """
-    if len(payload) < 2:
-        raise ValueError("Payload too short for G9")
-    return {
-        'home_temp': decode_temp(payload[0]),
-        'outside_temp': decode_temp(payload[1]),
-    }
-
-def decode_power_consumption(payload):
-    """
-    Decode GM energy consumption payload into watt-hours.
-
-    The payload is a 4-character reversed hexadecimal string representing
-    the total energy used in watt-hours. For example, b'25A3' reversed is
-    '3A52' which is 0x3A52 = 14930 Wh.
-
-    Returns the total energy consumption as an int in watt-hours.
-    """
-    return decode_hex_reversed(payload)
 
 def decode_protocol_version(payload):
     """Return protocol version string."""
-    return payload.decode('ascii').strip()
-
-def decode_feature_bits(payload):
-    """Return raw feature bits (not yet decoded)."""
-    return payload  # placeholder
-
-def decode_model(payload):
-    """Return model string."""
     return payload.decode('ascii').strip()
 
 def decode_room_temp(payload):
@@ -566,7 +419,7 @@ def encode_temp(temp):
     The input is clamped to 18.0–30.0°C for safety (matches my unit's limits).
     Returns the encoded temperature as a single byte (bytes object).
     """
-    clamped_temp = max(20, min(temp, 29))
+    clamped_temp = max(18, min(temp, 30))
     return bytes([int((clamped_temp - 18.0) * 2 + 64)])
 
 """
@@ -578,7 +431,7 @@ and provide higher-level methods for common operations. Finally something that i
 class DaikinController:
 
     def __init__(self, uart_id=1, tx=7, rx=6, timeout=1000, baudrate=2400,
-                 bits=8, parity=0, stop=2):
+                 bits=8, parity=2, stop=2):
         self.uart_id = uart_id
         self.tx = tx
         self.rx = rx
@@ -766,10 +619,26 @@ class DaikinController:
         payload = DaikinPower.OFF + DaikinMode.AUTO + encode_temp(18) + DaikinFanSpeed.AUTO
         return self.send_command(DaikinSetter.POWER_MODE_TEMP_FAN, payload=payload, read_response=False, timeout=timeout)
 
+    def set_swing(self, vertical=False, horizontal=False, timeout=1000):
+        """
+        Set louver swing state using the 4-byte D5 payload.
+        vertical  – True to enable vertical swing
+        horizontal – True to enable horizontal swing
+        """
+        payload = make_swing_payload(vertical=vertical, horizontal=horizontal)
+        return self.send_command(DaikinSetter.SWING_HUMIDITY, payload=payload, read_response=False, timeout=timeout)
+
     def get_status(self, timeout=1000):
         payload = self.query_payload(DaikinQuery.POWER_MODE_TEMP_FAN, timeout=timeout)
         return decode_f1_response(payload)
 
+    def get_temp(self, timeout=1000):
+        payload = self.query_payload(DaikinQuery.POWER_MODE_TEMP_FAN, timeout=timeout)
+        status = decode_f1_response(payload)
+        return status['target_temp']
+
+    def get_target_temp(self, timeout=1000):
+        return self.get_temp(timeout=timeout)
 
 
 """
@@ -786,7 +655,7 @@ DaikinController class directly instead.
 _DEFAULT_CONTROLLER = DaikinController()
 
 
-def init_uart(uart_id=1, tx=7, rx=6, baudrate=2400, bits=8, parity=0, stop=2, timeout=1000):
+def init_uart(uart_id=1, tx=7, rx=6, baudrate=2400, bits=8, parity=2, stop=2, timeout=1000):
     """Initialize the shared module-level UART controller."""
     global _DEFAULT_CONTROLLER
     # properly release old UART if exists
@@ -819,26 +688,11 @@ def query_features(timeout=1000):
 def query_swing_humidity(timeout=1000):
     return _DEFAULT_CONTROLLER.query_payload(DaikinQuery.SWING_HUMIDITY, timeout=timeout)
 
-def query_powerful_quiet_led(timeout=1000):
-    return _DEFAULT_CONTROLLER.query_payload(DaikinQuery.POWERFUL_QUIET_LED, timeout=timeout)
-
-def query_demand_eco(timeout=1000):
-    return _DEFAULT_CONTROLLER.query_payload(DaikinQuery.DEMAND_ECO, timeout=timeout)
+def query_powerful_alt(timeout=1000):
+    return _DEFAULT_CONTROLLER.query_payload(DaikinQuery.POWERFUL_ALT, timeout=timeout)
 
 def query_protocol_version(timeout=1000):
     return _DEFAULT_CONTROLLER.query_payload(DaikinQuery.PROTOCOL_VERSION, timeout=timeout)
-
-def query_temps_alt(timeout=1000):
-    return _DEFAULT_CONTROLLER.query_payload(DaikinQuery.TEMPS_ALT, timeout=timeout)
-
-def query_feature_bits(timeout=1000):
-    return _DEFAULT_CONTROLLER.query_payload(DaikinQuery.FEATURE_BITS, timeout=timeout)
-
-def query_power_consumption(timeout=1000):
-    return _DEFAULT_CONTROLLER.query_payload(DaikinQuery.POWER_CONSUMPTION, timeout=timeout)
-
-def query_model(timeout=1000):
-    return _DEFAULT_CONTROLLER.query_payload(DaikinQuery.MODEL, timeout=timeout)
 
 def query_room_temp(timeout=1000):
     return _DEFAULT_CONTROLLER.query_payload(DaikinQuery.ROOM_TEMP, timeout=timeout)
@@ -861,15 +715,9 @@ def query_humidity(timeout=1000):
 def query_louver_angle(timeout=1000):
     return _DEFAULT_CONTROLLER.query_payload(DaikinQuery.LOUVER_ANGLE, timeout=timeout)
 
-# Setter wrappers (raw bytes still accepted, but you can use helpers)
+# Setter wrappers
 def set_swing_humidity(payload=b"", read_response=False, timeout=1000):
     return send_setter(DaikinSetter.SWING_HUMIDITY, payload=payload, read_response=read_response, timeout=timeout)
-
-def set_powerful_quiet_led(payload=b"", read_response=False, timeout=1000):
-    return send_setter(DaikinSetter.POWERFUL_QUIET_LED, payload=payload, read_response=read_response, timeout=timeout)
-
-def set_demand_eco(payload=b"", read_response=False, timeout=1000):
-    return send_setter(DaikinSetter.DEMAND_ECO, payload=payload, read_response=read_response, timeout=timeout)
 
 # Convenience on/off
 def turn_on(temp, fan=DaikinFanSpeed.AUTO, mode=DaikinMode.COOL, timeout=1000):
